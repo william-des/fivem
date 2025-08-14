@@ -265,6 +265,43 @@ static void CloseFindHandler(fx::ScriptContext& context)
 	}
 }
 
+template<typename TTraits>
+static void GetEntitiesInRadiusForPool(fx::ScriptContext& context, 
+    float checkX, float checkY, float checkZ, float radius, 
+    bool sortOutput, const std::unordered_set<int>& modelSet,
+    std::vector<std::pair<float, int>>& entities)
+{
+    float squaredMaxDistance = radius * radius;
+    auto pool = TTraits::GetPool();
+    
+    for (int i = 0; i < pool->GetSize(); i++)
+    {
+        auto* entity = pool->GetAt(i);
+        if (!entity)
+            continue;
+            
+        auto position = entity->GetPosition();
+        float dx = position.x - checkX;
+        float dy = position.y - checkY;
+        float dz = position.z - checkZ;
+        float distSq = dx * dx + dy * dy + dz * dz;
+        
+        if (distSq >= squaredMaxDistance)
+            continue;
+            
+        auto modelHash = entity->GetArchetype()->hash;
+        
+        if (modelSet.empty() || modelSet.find(modelHash) != modelSet.end())
+        {
+            uint32_t guid = TTraits::getScriptGuid(entity);
+            if (guid != 0)
+            {
+                entities.push_back({ distSq, static_cast<int>(guid) });
+            }
+        }
+    }
+}
+
 static InitFunction initFunction([]()
 {
 	fx::ScriptEngine::RegisterNativeHandler("FIND_FIRST_PED", FindFirstHandler<PedPoolTraits>);
@@ -300,6 +337,58 @@ static InitFunction initFunction([]()
 		{
 			throw std::runtime_error(va("Invalid pool: %s", pool));
 		}
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("GET_ENTITIES_IN_RADIUS", [](fx::ScriptContext& context)
+	{
+		float checkX = context.GetArgument<float>(0);
+		float checkY = context.GetArgument<float>(1);
+		float checkZ = context.GetArgument<float>(2);
+		float radius = context.GetArgument<float>(3);
+		int entityType = context.GetArgument<int>(4);
+		bool sortOutput = context.GetArgument<bool>(5);
+		fx::scrObject models = context.GetArgument<fx::scrObject>(6);
+		
+		std::vector<std::pair<float, int>> entities;
+		std::vector<int> modelList = fx::DeserializeObject<std::vector<int>>(models);
+		std::unordered_set<int> modelSet(modelList.begin(), modelList.end());
+		
+		switch (entityType)
+		{
+			case 1:
+				GetEntitiesInRadiusForPool<PedPoolTraits>(context, checkX, checkY, checkZ, 
+					radius, sortOutput, modelSet, entities);
+				break;
+			case 2:
+				GetEntitiesInRadiusForPool<VehiclePoolTraits>(context, checkX, checkY, checkZ, 
+					radius, sortOutput, modelSet, entities);
+				break;
+			case 3:
+				GetEntitiesInRadiusForPool<ObjectPoolTraits>(context, checkX, checkY, checkZ, 
+					radius, sortOutput, modelSet, entities);
+				break;
+			default:
+				throw std::runtime_error(va("Invalid entity type: %d", entityType));
+		}
+		
+		// Sort by distance if requested
+		if (sortOutput)
+		{
+			std::sort(entities.begin(), entities.end(), [](const auto& a, const auto& b)
+			{
+				return a.first < b.first;
+			});
+		}
+		
+		// Extract just the entity IDs
+		std::vector<int> entityList;
+		entityList.reserve(entities.size());
+		for (auto& entry : entities)
+		{
+			entityList.push_back(entry.second);
+		}
+		
+		context.SetResult(fx::SerializeObject(entityList));
 	});
 });
 
